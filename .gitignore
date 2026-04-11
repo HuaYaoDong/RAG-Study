@@ -1,0 +1,9 @@
+__pycache__/
+.env
+.db
+.idea/
+.vscode/
+math_chunks.jsonl
+math_vector_db/
+*.txt
+*.md
