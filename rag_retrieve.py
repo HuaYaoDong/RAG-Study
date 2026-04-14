@@ -1,143 +1,91 @@
-from zhipuai import ZhipuAI  # 用于调用智谱AI生成Embedding
-from dotenv import load_dotenv  # 用于加载 .env 文件中的环境变量
 import os
-from typing import List, Tuple
-import chromadb
+from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_classic.storage import LocalFileStore # 对应建库时的存储方式
+from langchain_classic.retrievers import ParentDocumentRetriever
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sentence_transformers import CrossEncoder
+from langchain_classic.storage import EncoderBackedStore
+import pickle
 
-load_dotenv()  
+# 引入全局配置
+from config import Config
 
-# 获取 API 密钥和数据库路径
-ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")  
-DATABASE_PATH = os.getenv("DATABASE_PATH") 
-
-def initialize_model(api_key: str):
-    """
-    初始化智谱AI客户端
-    """
-
-def generate_embeddings(text: str) -> list[float]:
-    """
-    调用智谱API生成文本的向量表示
-    """
-    try:
-        client = ZhipuAI(api_key=ZHIPU_API_KEY)
-        response = client.embeddings.create(
-            model='embedding-3',  # 智谱的中文小模型，适合生成文本向量
-            input=text
+class MathRetriever:
+    def __init__(self):
+        print(f"🔧 正在初始化检索器，加载 Embedding 模型: {Config.EMBED_MODEL_NAME}")
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name=Config.EMBED_MODEL_NAME,
+            model_kwargs={'device': Config.DEVICE}, 
+            encode_kwargs={'normalize_embeddings': True}
         )
-        return response.data[0].embedding  # 返回生成的向量
-    except Exception as e:
-        print(f"生成向量时发生错误: {e}")
-        return []  # 发生错误时返回空列表
-    
-def fetch_embeddings_chroma(collection_name: str) -> List[Tuple[str, str, List[float]]]:
-    """
-    从 Chroma 数据库中提取存储的文本块及其Embedding。
-    :param collection_name: Chroma 中的集合名称 (相当于关系型数据库的表名)
-    :return: 返回一个包含 (file_name, chunk, embedding) 的列表。
-    """
-    # 1. 从环境变量获取数据库路径
-    db_path = os.getenv("CHROMA_DB_PATH")
-    if not db_path:
-        raise ValueError("环境变量 CHROMA_DB_PATH 未设置，请检查 .env 文件！")
+        
+        self.vectorstore = Chroma(
+            collection_name="math_parent_child",
+            embedding_function=self.embeddings,
+            persist_directory=Config.DB_DIR
+        )
+        
+        # ======== 【修改核心部分】 ========
+        store_path = os.path.join(Config.DB_DIR, "docstore")
+        fs = LocalFileStore(store_path)
+        
+        # 必须使用与写入时完全相同的反序列化逻辑
+        self.store = EncoderBackedStore(
+            store=fs,
+            key_encoder=lambda x: x,
+            value_serializer=pickle.dumps,
+            value_deserializer=pickle.loads
+        )
+        # ==================================
+        
+        print(f"🚀 正在加载 Rerank 模型: {Config.RERANK_MODEL_NAME}")
+        self.reranker = CrossEncoder(Config.RERANK_MODEL_NAME, max_length=512, device=Config.DEVICE)
+        
+        self.retriever = ParentDocumentRetriever(
+            vectorstore=self.vectorstore,
+            docstore=self.store,
+            child_splitter=RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
+        )
 
-    # 2. 初始化 Chroma 持久化客户端
-    client = chromadb.PersistentClient(path=db_path)
-    
-    try:
-        # 3. 获取对应的集合
-        collection = client.get_collection(name=collection_name)
-    except Exception as e:
-        print(f"找不到集合 '{collection_name}': {e}")
-        return []
+    def retrieve_with_rerank(self, query: str):
+        """标准化的两阶段检索接口，供 Agent 随时调用"""
+        print(f"\n[第一阶段] 向量召回中: {query}")
+        self.retriever.search_kwargs = {"k": Config.RETRIEVER_TOP_K}
+        candidate_docs = self.retriever.invoke(query)
+        
+        if not candidate_docs:
+            print("❌ 未检索到相关内容。")
+            return []
 
-    # 4. 获取集合中的所有数据
-    # 注意：Chroma 的 get() 默认不返回 embeddings，必须在 include 中显式声明
-    chroma_data = collection.get(
-        include=["documents", "metadatas", "embeddings"]
-    )
-    
-    results = []
-    
-    # 5. 组装结果
-    # Chroma 返回的是一个字典，包含 ids, documents, metadatas, embeddings 等列表
-    if chroma_data["ids"]:
-        for i in range(len(chroma_data["ids"])):
-            # 提取元数据中的 file_name (前提是你在存入 Chroma 时，将文件名存入了 metadata)
-            metadata = chroma_data["metadatas"][i]
-            file_name = metadata.get("file_name", "unknown_file") if metadata else "unknown_file"
+        print(f"✅ 召回 {len(candidate_docs)} 个候选父文档，开始交叉重排...")
+        
+        # 构建输入对并打分
+        sentence_pairs = [[query, doc.page_content] for doc in candidate_docs]
+        scores = self.reranker.predict(sentence_pairs)
+        
+        # 排序并提取前 K 个
+        doc_score_pairs = list(zip(candidate_docs, scores))
+        doc_score_pairs.sort(key=lambda x: x[1], reverse=True)
+        
+        top_docs = []
+        for i, (doc, score) in enumerate(doc_score_pairs[:Config.RERANK_TOP_K]):
+            print(f"--- 🎯 精排 Top {i+1} (匹配得分: {score:.4f}) ---")
+            top_docs.append(doc)
             
-            chunk = chroma_data["documents"][i]
-            embedding = chroma_data["embeddings"][i]
-            
-            results.append((file_name, chunk, embedding))
-            
-    return results
+        return top_docs
 
-
-def query_similar_text(query: str, db_path: str, top_k: int = 3):
-    """
-    根据查询文本，直接从 Chroma 数据库中检索最相似的文本块。
-    """
-    # 1. 统一使用本地 BGE 模型生成问题的 Embedding
-    print("正在加载本地 Embedding 模型处理您的问题...")
-    embeddings_model = HuggingFaceEmbeddings(
-        model_name="BAAI/bge-small-zh-v1.5",
-        model_kwargs={'device': 'cuda'}, # 你的 4060 显卡在这里发力
-        encode_kwargs={'normalize_embeddings': True}
-    )
-    
-    # 将用户的问题翻译成 512 维度的向量
-    query_embedding = embeddings_model.embed_query(query)
-
-    # 2. 连接 Chroma 数据库
-    client = chromadb.PersistentClient(path=db_path)
-    
-    # 3. 获取集合 (名字必须写死为 "langchain"，因为这是 Langchain 构建时的默认名)
-    collection_name = "langchain" 
-    try:
-        collection = client.get_collection(name=collection_name)
-    except Exception as e:
-        print(f"获取集合 '{collection_name}' 失败，请确认数据库是否已正确构建: {e}")
-        return []
-
-    # 4. 执行极速检索
-    results = collection.query(
-        query_embeddings=[query_embedding], 
-        n_results=top_k,                    
-        include=["documents", "metadatas", "distances"] 
-    )
-
-    similarities = []
-    
-    # 5. 提取结果
-    if results["ids"] and len(results["ids"][0]) > 0:
-        documents = results["documents"][0]
-        metadatas = results["metadatas"][0]
-        distances = results["distances"][0]
-
-        for i in range(len(documents)):
-            # 提取元数据和文本
-            metadata = metadatas[i]
-            chunk = documents[i]
-            
-            # 由于使用的是 BAAI/bge-small-zh-v1.5 配合 LangChain 默认设置
-            # 这里 Chroma 返回的通常是距离，我们转换一下（具体视模型而定，也可以直接返回距离）
-            score = 1.0 - distances[i] if distances[i] <= 1.0 else distances[i]
-
-            similarities.append((metadata, chunk, score))
-
-    return similarities
-
-
+# 独立测试入口
 if __name__ == "__main__":
-    # 示例查询
-    user_query = "导数的定义"  # 替换为你的查询
-    # 删掉 ZHIPU_API_KEY 传参，让它只传 3 个参数
-    top_k_results = query_similar_text(user_query, DATABASE_PATH, top_k=3)
-
-    # 打印结果
-    print("查询结果：")
-    for file_name, chunk, similarity in top_k_results:
-        print(f"文件名: {file_name}, 相似度: {similarity:.4f}, 文本块: {chunk}")
+    TEST_QUERY = "导数的几何意义是什么？切线方程怎么求？"
+    
+    # 初始化检索引擎
+    retriever_engine = MathRetriever()
+    
+    # 执行检索
+    results = retriever_engine.retrieve_with_rerank(TEST_QUERY)
+    
+    for i, doc in enumerate(results):
+        print(f"\n[最终喂给大模型的文档片段 {i+1}]")
+        print(f"📌 层级路径: {doc.metadata}")
+        print(f"📄 内容摘录: {doc.page_content[:150]}...\n")

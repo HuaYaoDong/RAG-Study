@@ -4,6 +4,6 @@ __pycache__/
 .idea/
 .vscode/
 math_chunks.jsonl
-math_vector_db/
+database/
 *.txt
 *.md
