@@ -1,7 +1,7 @@
 import os
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_classic.storage import LocalFileStore # 对应建库时的存储方式
+from langchain_classic.storage import LocalFileStore # 保存到本地
 from langchain_classic.retrievers import ParentDocumentRetriever
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import CrossEncoder
@@ -13,7 +13,7 @@ from config import Config
 
 class MathRetriever:
     def __init__(self):
-        print(f"🔧 正在初始化检索器，加载 Embedding 模型: {Config.EMBED_MODEL_NAME}")
+        print(f"正在初始化检索器，加载 Embedding 模型: {Config.EMBED_MODEL_NAME}")
         self.embeddings = HuggingFaceEmbeddings(
             model_name=Config.EMBED_MODEL_NAME,
             model_kwargs={'device': Config.DEVICE}, 
@@ -26,7 +26,6 @@ class MathRetriever:
             persist_directory=Config.DB_DIR
         )
         
-        # ======== 【修改核心部分】 ========
         store_path = os.path.join(Config.DB_DIR, "docstore")
         fs = LocalFileStore(store_path)
         
@@ -39,7 +38,7 @@ class MathRetriever:
         )
         # ==================================
         
-        print(f"🚀 正在加载 Rerank 模型: {Config.RERANK_MODEL_NAME}")
+        print(f"正在加载 Rerank 模型: {Config.RERANK_MODEL_NAME}")
         self.reranker = CrossEncoder(Config.RERANK_MODEL_NAME, max_length=512, device=Config.DEVICE)
         
         self.retriever = ParentDocumentRetriever(
@@ -55,10 +54,10 @@ class MathRetriever:
         candidate_docs = self.retriever.invoke(query)
         
         if not candidate_docs:
-            print("❌ 未检索到相关内容。")
+            print("未检索到相关内容。")
             return []
 
-        print(f"✅ 召回 {len(candidate_docs)} 个候选父文档，开始交叉重排...")
+        print(f"召回 {len(candidate_docs)} 个候选父文档，开始交叉重排...")
         
         # 构建输入对并打分
         sentence_pairs = [[query, doc.page_content] for doc in candidate_docs]
@@ -70,7 +69,7 @@ class MathRetriever:
         
         top_docs = []
         for i, (doc, score) in enumerate(doc_score_pairs[:Config.RERANK_TOP_K]):
-            print(f"--- 🎯 精排 Top {i+1} (匹配得分: {score:.4f}) ---")
+            print(f"--- 精排 Top {i+1} (匹配得分: {score:.4f}) ---")
             top_docs.append(doc)
             
         return top_docs
@@ -87,5 +86,5 @@ if __name__ == "__main__":
     
     for i, doc in enumerate(results):
         print(f"\n[最终喂给大模型的文档片段 {i+1}]")
-        print(f"📌 层级路径: {doc.metadata}")
-        print(f"📄 内容摘录: {doc.page_content[:150]}...\n")
+        print(f"层级路径: {doc.metadata}")
+        print(f"内容摘录: {doc.page_content[:150]}...\n")

@@ -48,5 +48,5 @@ route_prompt = ChatPromptTemplate.from_messages([
     ("human", "{query}")
 ]).partial(format_instructions=parser.get_format_instructions())
 
-# 5. 重新组装 Chain (将原始字符串交给 parser 解析为 Python 对象)
+# 5. 重新组装 Chain 
 router_chain = route_prompt | llm | parser

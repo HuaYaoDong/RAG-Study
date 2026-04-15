@@ -12,7 +12,7 @@ class Config:
     # ==========================================
     ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")
     if not ZHIPU_API_KEY:
-        raise ValueError("🚨 严重错误: 未找到 ZHIPU_API_KEY，请检查 .env 文件！")
+        raise ValueError("错误: 未找到 ZHIPU_API_KEY，请检查 .env 文件！")
 
     # ==========================================
     # 2. 路径配置

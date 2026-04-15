@@ -73,7 +73,7 @@ def build_and_save_retriever(parent_docs: list):
     print("正在进行子文档切分、向量化并建立父子映射关系...")
     retriever.add_documents(parent_docs, ids=[str(uuid.uuid4()) for _ in parent_docs])
     
-    print(f"✅ 高级检索器构建成功，向量与文档数据已持久化至: {Config.DB_DIR}")
+    print(f"高级检索器构建成功，向量与文档数据已持久化至: {Config.DB_DIR}")
 
 if __name__ == "__main__":
     # 这里可以后续改成遍历 DATA_DIR 里的所有 md 文件
