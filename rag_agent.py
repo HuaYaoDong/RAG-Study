@@ -1,18 +1,9 @@
-import os
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-
 from pydantic import BaseModel, Field
 from typing import Optional
 from langchain_openai import ChatOpenAI
-from dotenv import load_dotenv 
+from config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
-import os
-
-load_dotenv()  
-
-# 获取 API 密钥
-QWEN_API_KEY = os.getenv("QWEN_API_KEY")
 
 # 1. 定义期望的数据结构
 class RouteQuery(BaseModel):
@@ -29,7 +20,7 @@ class RouteQuery(BaseModel):
 # 2. 初始化大模型（千问）
 llm = ChatOpenAI(
     model="qwen-plus", 
-    api_key=QWEN_API_KEY, 
+    api_key=Config.QWEN_API_KEY, 
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/", 
     temperature=0
 )

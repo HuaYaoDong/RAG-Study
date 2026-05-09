@@ -1,4 +1,7 @@
 import os
+# 设置 HuggingFace 镜像站，加速本地模型下载
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
 from dotenv import load_dotenv
 
 # 强制加载项目根目录下的 .env 文件
@@ -12,8 +15,6 @@ class Config:
     # ==========================================
     ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")
     QWEN_API_KEY = os.getenv("QWEN_API_KEY")
-    if not QWEN_API_KEY:
-        raise ValueError("错误: 未找到 QWEN_API_KEY，请检查 .env 文件！")
 
     # 默认使用千问大模型
     DEFAULT_LLM_PROVIDER = "qwen"  # 可选: "zhipu" 或 "qwen"

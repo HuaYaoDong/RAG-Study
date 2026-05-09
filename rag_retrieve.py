@@ -1,12 +1,9 @@
-import os
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+# 引入全局配置
+from config import Config
 
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from sentence_transformers import CrossEncoder
-
-# 引入全局配置
-from config import Config
 
 
 class MathRetriever:

@@ -1,7 +1,10 @@
 import os
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")  # 必须最先设置！
+import uuid
+from datetime import datetime
+from typing import List, Optional
+from pydantic import BaseModel, Field
 
-from dotenv import load_dotenv
+
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -11,9 +14,6 @@ from config import Config
 from rag_split import process_math_markdown, process_math_json, process_teacher_json, build_and_save_vectorstore
 from rag_retrieve import MathRetriever
 from rag_agent import router_chain
-
-# 加载环境变量
-load_dotenv()
 
 # ==========================================
 # 1：知识库初始化 (切片与建库)
@@ -72,13 +72,9 @@ def init_llm(model_name: str = "qwen-plus", temperature: float = 0.1):
     """
     初始化用于生成回答的大模型（千问）。
     """
-    qwen_api_key = os.getenv("QWEN_API_KEY")
-    if not qwen_api_key:
-        raise ValueError("请在 .env 文件中设置 QWEN_API_KEY")
-
     llm = ChatOpenAI(
         model=model_name,
-        api_key=qwen_api_key,
+        api_key=Config.QWEN_API_KEY,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/", 
         temperature=temperature, 
         max_tokens=2048
@@ -207,6 +203,65 @@ def print_and_save_answer(query: str, answer: str, filepath: str = "高数RAG问
         f.write("---\n\n")
 
     print(f"本次问答已自动保存至 [{filepath}]")
+
+
+# ==========================================
+# 6：标准 API 接口封装
+# ==========================================
+class Citation(BaseModel):
+    citation_id: str
+    source_type: str
+    source_id: str
+    snippet: Optional[str] = None
+    score: float = 1.0
+
+class ResponseMessage(BaseModel):
+    message_id: str
+    role: str = "assistant"
+    content: str
+    citations: List[Citation] = []
+    created_at: str
+
+def process_chat_request(request_data: dict, retriever_engine: MathRetriever, llm) -> dict:
+    """
+    处理标准格式的问答请求，返回符合规范的 JSON 结构 (dict)。
+    """
+    query = request_data.get("content", "").strip()
+    if not query:
+        raise ValueError("输入的问题(content)不能为空")
+    
+    # 1. 意图路由与检索
+    retrieved_docs = smart_retrieve(query, retriever_engine)
+    
+    # 2. 生成回答
+    final_answer = generate_math_answer(query=query, retrieved_docs=retrieved_docs, llm=llm)
+    
+    # 3. 组装 Citations
+    citations = []
+    for i, doc in enumerate(retrieved_docs):
+        metadata = doc.metadata or {}
+        # 兼容新版的 json 解析(含 source_type 和 key)与旧版 markdown 解析
+        source_type = metadata.get("source_type", "unknown")
+        source_id = metadata.get("key", str(uuid.uuid4()))
+        snippet = doc.page_content[:200] if hasattr(doc, 'page_content') else str(doc)[:200]
+        
+        citations.append(Citation(
+            citation_id=f"citation_{i+1}",
+            source_type=source_type,
+            source_id=source_id,
+            snippet=snippet,
+            score=1.0  # 若后续能拿到检索分数可以替换
+        ))
+        
+    # 4. 组装标准 Response
+    response = ResponseMessage(
+        message_id=f"msg_assistant_{uuid.uuid4().hex[:8]}",
+        content=final_answer,
+        citations=citations,
+        created_at=datetime.now().isoformat()
+    )
+    
+    return response.model_dump()
 
 
 if __name__ == "__main__":

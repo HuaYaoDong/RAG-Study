@@ -1,18 +1,13 @@
-import os
 import json
 import uuid
-from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-import pickle
-
-# 设置 HuggingFace 国内镜像
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 # 引入全局配置
 from config import Config
 
+from langchain_text_splitters import MarkdownHeaderTextSplitter
+from langchain_core.documents import Document
+from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
 
 def process_math_markdown(md_file_path: str):
     """读取 Markdown 文件，按标题提取父文档"""
@@ -65,7 +60,7 @@ def process_teacher_json(
     course_path: str = None
 ) -> list:
     """
-    解析老师提供的 JsonRichText 格式数据
+    解析 JsonRichText 格式数据
     """
     from json_parser import parse_all_sources
     
