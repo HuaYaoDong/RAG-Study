@@ -1,4 +1,6 @@
 import os
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")  # 必须最先设置！
+
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -6,7 +8,7 @@ from langchain_core.output_parsers import StrOutputParser
 
 # 导入其他模块的核心组件
 from config import Config
-from rag_split import process_math_markdown, build_and_save_retriever
+from rag_split import process_math_markdown, process_math_json, process_teacher_json, build_and_save_vectorstore
 from rag_retrieve import MathRetriever
 from rag_agent import router_chain
 
@@ -16,21 +18,48 @@ load_dotenv()
 # ==========================================
 # 1：知识库初始化 (切片与建库)
 # ==========================================
-def setup_database(md_file_path: str):
+def setup_database(source_file_path: str = None, use_teacher_data: bool = False):
     """
-    检查向量数据库是否已存在。如果不存在，则一次性完成 Markdown 解析、切分和持久化建库。
+    检查向量数据库是否已存在。如果不存在，则一次性完成文档解析、切分和持久化建库。
+    
+    Args:
+        source_file_path: 源文件路径（支持 .md 和 .json）
+        use_teacher_data: 是否使用老师提供的 JsonRichText 格式数据
     """
     print("\n>>> 阶段 1：检查知识库状态 <<<")
-    # 简单通过判断 docstore 目录是否存在来决定是否需要重新建库
-    store_path = os.path.join(Config.DB_DIR, "docstore")
+    # 通过判断数据库文件是否存在来决定是否需要重新建库
+    db_files = os.listdir(Config.DB_DIR) if os.path.exists(Config.DB_DIR) else []
     
-    if not os.path.exists(store_path) or not os.listdir(store_path):
-        print(f"未检测到已存在的数据库，开始读取 [{md_file_path}] 并构建...")
-        if not os.path.exists(md_file_path):
-            raise FileNotFoundError(f"找不到指定的 Markdown 文件: {md_file_path}")
+    if not db_files:
+        if use_teacher_data:
+            # 使用老师提供的 JsonRichText 格式数据
+            print("使用老师提供的 JsonRichText 数据源...")
+            docs = process_teacher_json(
+                knowledge_graph_path="data/knowledge_graph.json",
+                problems_path="data/problems.json",
+                course_path="data/course.json"
+            )
+        elif source_file_path:
+            # 根据文件扩展名选择解析器
+            if not os.path.exists(source_file_path):
+                raise FileNotFoundError(f"找不到指定的源文件: {source_file_path}")
             
-        docs = process_math_markdown(md_file_path)
-        build_and_save_retriever(docs)
+            file_ext = os.path.splitext(source_file_path)[1].lower()
+            if file_ext == '.json':
+                print(f"检测到 JSON 文件，开始解析 [{source_file_path}] ...")
+                docs = process_math_json(source_file_path)
+            elif file_ext == '.md':
+                print(f"检测到 Markdown 文件，开始解析 [{source_file_path}] ...")
+                docs = process_math_markdown(source_file_path)
+            else:
+                raise ValueError(f"不支持的文件类型: {file_ext}，仅支持 .md 和 .json")
+        else:
+            raise ValueError("必须指定 source_file_path 或设置 use_teacher_data=True")
+        
+        if not docs:
+            raise ValueError("未解析到任何文档，请检查数据文件")
+        
+        build_and_save_vectorstore(docs)
         print("知识库构建完毕！\n")
     else:
         print(f"检测到本地数据库已存在 ({Config.DB_DIR})，直接加载。\n")
@@ -39,18 +68,18 @@ def setup_database(md_file_path: str):
 # ==========================================
 # 2：生成模型初始化
 # ==========================================
-def init_llm(model_name: str = "glm-4", temperature: float = 0.1):
+def init_llm(model_name: str = "qwen-plus", temperature: float = 0.1):
     """
-    初始化用于生成回答的大模型。
+    初始化用于生成回答的大模型（千问）。
     """
-    zhipu_api_key = os.getenv("ZHIPU_API_KEY")
-    if not zhipu_api_key:
-        raise ValueError("请在 .env 文件中设置 ZHIPU_API_KEY")
+    qwen_api_key = os.getenv("QWEN_API_KEY")
+    if not qwen_api_key:
+        raise ValueError("请在 .env 文件中设置 QWEN_API_KEY")
 
     llm = ChatOpenAI(
         model=model_name,
-        api_key=zhipu_api_key,
-        base_url="https://open.bigmodel.cn/api/paas/v4/", 
+        api_key=qwen_api_key,
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/", 
         temperature=temperature, 
         max_tokens=2048
     )
@@ -117,13 +146,34 @@ def generate_math_answer(query: str, retrieved_docs: list, llm) -> str:
         content = doc.page_content if hasattr(doc, 'page_content') else str(doc)
         context_text += f"\n[参考片段 {i+1}] (标签: {source_info})\n{content}\n" + "-" * 30
 
-    system_prompt = """你是一位严谨的高等数学教授。请基于下方提供的【参考资料】来回答用户的提问。
+    system_prompt = r"""你是“高数速答助手”。目标是：让学生最快拿到可用结果。
 
-核心约束原则：
-1. 严谨性：绝不编造数学定理或公式。如果参考资料中无法得出答案，请回复“根据现有知识库，无法准确解答”。
-2. 完整性：包含前提条件、核心公式及推导步骤。
-3. 格式规范：所有数学公式必须使用标准 LaTeX 格式（行内 $...$，独立块 $$...$$）。
-4. 结构还原：如遇到特殊的占位符或图表标记，请保持逻辑结构不变。
+回答规则（必须遵守）：
+1. 先给最终答案，再补最少必要说明；禁止寒暄和铺垫。
+2. 用户问“定义/公式/定理”时，直接给标准表达式（优先 LaTeX），不展开背景。
+3. 用户问“怎么做题”时，只给最短步骤链（最多 3 步）+ 最终结果。
+4. 无关内容一律不输出；不重复题目。
+5. 若题意不完整，先给最常见默认情形下的答案，并用一句话说明默认条件。
+6. 若知识库不足，直接说“当前资料不足以确定答案”，不要编造。
+7. 输出尽量短：默认不超过 6 行。
+
+格式规则：
+- 数学内容优先用 LaTeX。
+- 优先使用“结论：...”开头。
+- 除非用户要求，不给例题、不做延伸阅读。
+
+示例风格：
+用户：导数的定义
+助手：
+结论：函数 \(f(x)\) 在 \(x_0\) 处的导数定义为
+\[
+f'(x_0)=\lim_{h\to 0}\frac{f(x_0+h)-f(x_0)}{h}
+\]
+等价形式：
+\[
+f'(x_0)=\lim_{x\to x_0}\frac{f(x)-f(x_0)}{x-x_0}
+\]
+
 
 【参考资料】:
 {context}
@@ -141,27 +191,41 @@ def generate_math_answer(query: str, retrieved_docs: list, llm) -> str:
 # ==========================================
 # 5：主程序入口 (Pipeline 组装)
 # ==========================================
-def save_to_markdown(query: str, answer: str, filepath: str = "高数RAG问答记录.md"):
+def print_and_save_answer(query: str, answer: str, filepath: str = "高数RAG问答记录.md"):
     """
-    将用户问题和模型解答以追加模式(a)写入 Markdown 文件
+    同时在命令行输出答案，并以追加模式写入 Markdown 文件。
     """
-    # 使用 "a" 模式（append），保证每次问答都是追加在文件末尾，不会覆盖之前的内容
+    # 1) 命令行输出
+    print("\n" + "=" * 20 + " 最终解答 " + "=" * 20)
+    print(answer)
+    print("=" * 50)
+
+    # 2) 追加保存到 Markdown，避免覆盖历史问答
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(f"### 提问：{query}\n\n")
         f.write(f"**解答：**\n\n{answer}\n\n")
-        f.write("---\n\n")  # 添加一条分割线，保持笔记整洁
+        f.write("---\n\n")
+
     print(f"本次问答已自动保存至 [{filepath}]")
 
 
 if __name__ == "__main__":
-    # 配置你要解析的高数 Markdown 文件路径
-    MD_FILE_PATH = "高等数学.md" 
+    # 配置数据源
+    # 模式1: 使用老师提供的 JsonRichText 数据（推荐）
+    USE_TEACHER_DATA = True
+    
+    # 模式2: 使用自定义文件（取消 USE_TEACHER_DATA 并设置 SOURCE_FILE_PATH）
+    SOURCE_FILE_PATH = "data/示例_高等数学.md"
+
     # 设定输出笔记的文件名
     OUTPUT_MD_FILE = "我的高数学习笔记.md"
 
     try:
         # 步骤 A：一次性完成切分与数据库构建
-        setup_database(MD_FILE_PATH)
+        if USE_TEACHER_DATA:
+            setup_database(use_teacher_data=True)
+        else:
+            setup_database(source_file_path=SOURCE_FILE_PATH)
         
         # 步骤 B：初始化检索引擎与生成模型
         retriever_engine = MathRetriever()
@@ -191,12 +255,8 @@ if __name__ == "__main__":
             # 执行生成
             final_answer = generate_math_answer(query=user_query, retrieved_docs=retrieved_docs, llm=my_llm)
             
-            print("\n" + "="*20 + " 最终解答 " + "="*20)
-            print(final_answer)
-            print("="*50)
-            
-            # 新增：将生成的解答自动保存到 Markdown 文件中
-            save_to_markdown(query=user_query, answer=final_answer, filepath=OUTPUT_MD_FILE)
+            # 同时输出到命令行 + 保存到 Markdown
+            print_and_save_answer(query=user_query, answer=final_answer, filepath=OUTPUT_MD_FILE)
             
     except Exception as e:
         print(f"\n系统运行出错: {e}")

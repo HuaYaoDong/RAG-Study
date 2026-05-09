@@ -11,8 +11,12 @@ class Config:
     # 1. 安全与鉴权 (绝不硬编码！)
     # ==========================================
     ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")
-    if not ZHIPU_API_KEY:
-        raise ValueError("错误: 未找到 ZHIPU_API_KEY，请检查 .env 文件！")
+    QWEN_API_KEY = os.getenv("QWEN_API_KEY")
+    if not QWEN_API_KEY:
+        raise ValueError("错误: 未找到 QWEN_API_KEY，请检查 .env 文件！")
+
+    # 默认使用千问大模型
+    DEFAULT_LLM_PROVIDER = "qwen"  # 可选: "zhipu" 或 "qwen"
 
     # ==========================================
     # 2. 路径配置
@@ -25,8 +29,8 @@ class Config:
     # ==========================================
     # 3. 模型参数配置
     # ==========================================
-    # 大语言模型 (生成回答)
-    LLM_MODEL_NAME = "glm-4"
+    # 大语言模型 (生成回答) - 千问系列
+    LLM_MODEL_NAME = "qwen-plus"      # 可选: qwen-turbo(快), qwen-plus(平衡), qwen-max(最强)
     LLM_TEMPERATURE = 0.1  # 数学问题需要严谨，温度设低
 
     # 向量化模型 (本地运行)
@@ -39,7 +43,7 @@ class Config:
     # 4. 硬件与性能配置
     # ==========================================
     # 既然有 4060 加持，这两个 BGE 模型跑在 GPU 上速度会飞起，直接默认锁死 cuda
-    DEVICE = "cuda"
+    DEVICE = "cpu"  # 改为 cpu，CUDA 版本的 PyTorch 未安装
     
     # 检索相关参数
     RETRIEVER_TOP_K = 10     # 第一阶段向量召回的数量

@@ -1,15 +1,18 @@
 import os
+import json
 import uuid
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_classic.storage import LocalFileStore  # 关键修复：引入本地文件存储
-from langchain_classic.retrievers import ParentDocumentRetriever
-from langchain_classic.storage import EncoderBackedStore
 import pickle
 
-# 引入我们刚才写的全局配置
+# 设置 HuggingFace 国内镜像
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
+# 引入全局配置
 from config import Config
+
 
 def process_math_markdown(md_file_path: str):
     """读取 Markdown 文件，按标题提取父文档"""
@@ -17,70 +20,97 @@ def process_math_markdown(md_file_path: str):
         markdown_document = f.read()
 
     headers_to_split_on = [
-        ("#", "Chapter"),       
-        ("##", "Section"),      
-        ("###", "Topic"),       
-        ("####", "Sub_Topic"), 
+        ("#", "Chapter"),
+        ("##", "Section"),
+        ("###", "Topic"),
+        ("####", "Sub_Topic"),
     ]
     markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
     parent_docs = markdown_splitter.split_text(markdown_document)
-    
+
     print(f"解析完成！共生成 {len(parent_docs)} 个带有层级标签的父文档。")
     return parent_docs
 
-def build_and_save_retriever(parent_docs: list):
+
+def process_math_json(json_file_path: str):
+    """读取 JSON 文件，构建 Document 列表（兼容旧格式）"""
+    with open(json_file_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    # JSON 应为数组格式，每个元素包含 content 和 metadata
+    if not isinstance(data, list):
+        raise ValueError("JSON 文件必须是数组格式，每个元素包含 content 和 metadata")
+    
+    parent_docs = []
+    for item in data:
+        if 'content' not in item:
+            continue
+        
+        # 提取 metadata（Chapter, Section, Topic, Sub_Topic 等）
+        metadata = {k: v for k, v in item.items() if k != 'content'}
+        
+        doc = Document(
+            page_content=item['content'],
+            metadata=metadata
+        )
+        parent_docs.append(doc)
+    
+    print(f"解析完成！共生成 {len(parent_docs)} 个文档。")
+    return parent_docs
+
+
+def process_teacher_json(
+    knowledge_graph_path: str = None,
+    problems_path: str = None,
+    course_path: str = None
+) -> list:
+    """
+    解析老师提供的 JsonRichText 格式数据
+    """
+    from json_parser import parse_all_sources
+    
+    docs = parse_all_sources(
+        knowledge_graph_path=knowledge_graph_path,
+        problems_path=problems_path,
+        course_path=course_path
+    )
+    
+    return docs
+
+
+def build_and_save_vectorstore(parent_docs: list):
+    """构建向量数据库并持久化到本地"""
     print(f"正在加载 Embedding 模型 ({Config.EMBED_MODEL_NAME})...")
     embeddings = HuggingFaceEmbeddings(
         model_name=Config.EMBED_MODEL_NAME,
-        model_kwargs={'device': Config.DEVICE}, 
+        model_kwargs={'device': Config.DEVICE},
         encode_kwargs={'normalize_embeddings': True}
     )
 
+    # 为每个文档分配唯一ID
+    doc_ids = [str(uuid.uuid4()) for _ in parent_docs]
+
+    # 直接存入 Chroma（自带持久化）
     vectorstore = Chroma(
         collection_name="math_parent_child",
         embedding_function=embeddings,
         persist_directory=Config.DB_DIR
     )
-    
-    # ======== 【修改核心部分】 ========
-    store_path = os.path.join(Config.DB_DIR, "docstore")
-    os.makedirs(store_path, exist_ok=True)
-    
-    # 1. 建立底层字节存储
-    fs = LocalFileStore(store_path)
-    
-    # 2. 包装一层 Encoder，告诉它如何把 Document 转成字节流 (序列化)
-    store = EncoderBackedStore(
-        store=fs,
-        key_encoder=lambda x: x,
-        value_serializer=pickle.dumps,     # 存入时：对象转字节
-        value_deserializer=pickle.loads    # 读取时：字节转对象
-    )
-    # ==================================
 
-    child_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300, 
-        chunk_overlap=50,
-        separators=["\n\n", "。", "！", "？", "\n", "，", " "] 
-    )
+    print("正在进行文档切分、向量化并建立索引...")
+    texts = [doc.page_content for doc in parent_docs]
+    metadatas = [doc.metadata for doc in parent_docs]
 
-    retriever = ParentDocumentRetriever(
-        vectorstore=vectorstore,
-        docstore=store,
-        child_splitter=child_splitter,
-    )
+    vectorstore.add_texts(texts=texts, metadatas=metadatas, ids=doc_ids)
+    # 注意：新版 ChromaDB 无需手动调用 persist()，数据会自动持久化
+    return vectorstore
 
-    print("正在进行子文档切分、向量化并建立父子映射关系...")
-    retriever.add_documents(parent_docs, ids=[str(uuid.uuid4()) for _ in parent_docs])
-    
-    print(f"高级检索器构建成功，向量与文档数据已持久化至: {Config.DB_DIR}")
 
 if __name__ == "__main__":
-    # 这里可以后续改成遍历 DATA_DIR 里的所有 md 文件
-    MD_FILE = "第二章第一节.md" 
-    
+    MD_FILE = "data/示例_高等数学.md"
+
     print(">>> 阶段 1：解析父文档")
     docs = process_math_markdown(MD_FILE)
 
     print("\n>>> 阶段 2：执行切分并持久化入库")
-    build_and_save_retriever(docs)
+    build_and_save_vectorstore(docs)

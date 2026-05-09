@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
 from pydantic import BaseModel, Field
 from typing import Optional
 from langchain_openai import ChatOpenAI
@@ -9,7 +12,7 @@ import os
 load_dotenv()  
 
 # 获取 API 密钥
-ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")  
+QWEN_API_KEY = os.getenv("QWEN_API_KEY")
 
 # 1. 定义期望的数据结构
 class RouteQuery(BaseModel):
@@ -23,11 +26,11 @@ class RouteQuery(BaseModel):
         description="提取用户查询的核心数学知识点（如'导数证明'、'洛必达法则'），否则为 null"
     )
 
-# 2. 初始化大模型
+# 2. 初始化大模型（千问）
 llm = ChatOpenAI(
-    model="glm-4", 
-    api_key=ZHIPU_API_KEY, 
-    base_url="https://open.bigmodel.cn/api/paas/v4/", 
+    model="qwen-plus", 
+    api_key=QWEN_API_KEY, 
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/", 
     temperature=0
 )
 
